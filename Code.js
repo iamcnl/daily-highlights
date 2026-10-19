@@ -10,8 +10,16 @@ function sendRandomHighlight() {
   
   var allRows = [];
   
- sheets.forEach(function(sheet) {
-    var range = sheet.getRange('A:D');
+sheets.forEach(function(sheet) {
+    var lastRow = sheet.getLastRow();
+    
+    // Skip empty sheets immediately to save processing time
+    if (lastRow === 0) {
+      return;
+    }
+    
+    // Fetch only the rows and columns that actually have data (Columns A to D)
+    var range = sheet.getRange(1, 1, lastRow, 4);
     var data = range.getValues();
     var richTextValues = range.getRichTextValues();
     
