@@ -10,7 +10,7 @@ function sendRandomHighlight() {
   
   var allRows = [];
   
-  sheets.forEach(function(sheet) {
+ sheets.forEach(function(sheet) {
     var range = sheet.getRange('A:D');
     var data = range.getValues();
     var richTextValues = range.getRichTextValues();
@@ -23,6 +23,8 @@ function sendRandomHighlight() {
       formattedSheetName += ' <span style="font-size: 11px; color:#525453;"> ' + ' by ' + cellC1Value + ' </span>';
     }
 
+    let rows = [];
+
     if (data.length > 1) {
       rows = data.slice(1).filter((row, i) => row[0] || row[1]).map((row, i) => {
         return [formattedSheetName, richTextValues[i + 1][0], richTextValues[i + 1][1], row[3]]; // Column D (plain text)
@@ -31,8 +33,6 @@ function sendRandomHighlight() {
       rows = data.filter((row, i) => row[0] || row[1]).map((row, i) => {
         return [formattedSheetName, richTextValues[i][0], richTextValues[i][1], row[3]]; // Column D (plain text)
       });
-    } else {
-      rows = [];
     }
     
     allRows = allRows.concat(rows);
