@@ -7,6 +7,24 @@ const CONFIG = {
   columns: { highlight: 0, author: 1, note: 2, page: 3, sourceUrl: 4 },
 };
 
+const FONT_SANS = "'Inter', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
+const FONT_SERIF = "Georgia, 'Times New Roman', serif";
+
+const EMAIL_STYLES = `
+  :root { color-scheme: light dark; supported-color-schemes: light dark; }
+  a { color: inherit; }
+  @media (prefers-color-scheme: dark) {
+    .bg { background-color: #1e1e1e !important; }
+    .card { background-color: #272727 !important; border-color: #363633 !important; }
+    .tab { background-color: #363633 !important; color: #d4d0c8 !important; }
+    .ink { color: #d4d0c8 !important; }
+    .muted { color: #a8a49c !important; }
+    .faint { color: #787470 !important; }
+    .rule { border-color: #4a4a46 !important; }
+    .dots { color: #4a4a46 !important; }
+  }
+`;
+
 function sendRandomHighlight() {
   try {
     const settings = getSettings();
@@ -106,40 +124,81 @@ function shuffleArray(array) {
 }
 
 function renderEmail(highlights) {
-  const date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM dd, yyyy');
+  const date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM d, yyyy');
 
-  return `<div style="text-align:center; max-width:600px; margin:auto;">
-  <h2 style="margin-bottom:0;">${escapeHtml(CONFIG.subject)}</h2>
-  <p style="margin-top:4px; font-size:16px; color:#555;">${date}</p><br>
-  ${highlights.map(renderHighlight).join('')}
-</div>`;
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <style>${EMAIL_STYLES}</style>
+</head>
+<body style="margin:0; padding:0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="bg" bgcolor="#f0ede6" style="background-color:#f0ede6;">
+  <tr>
+    <td align="center" style="padding:32px 16px 40px; font-family:${FONT_SANS};">
+      <table role="presentation" align="center" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px; margin:0 auto;">
+        <tr>
+          <td style="padding:0 4px 28px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td class="ink" style="font-family:${FONT_SERIF}; font-size:22px; color:#1c1e1a;">${escapeHtml(CONFIG.subject.toLowerCase())}.</td>
+                <td class="muted" align="right" style="font-family:${FONT_SANS}; font-size:13px; color:#5a5d54;">${escapeHtml(date)}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        ${highlights.map(renderHighlight).join('')}
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>`;
 }
 
 function renderHighlight(item) {
-  const author = item.author
-    ? ` <span style="font-size:11px; color:#525453;">by ${escapeHtml(item.author)}</span>`
+  const footerParts = [];
+  if (item.author) {
+    footerParts.push(`<span class="faint" style="color:#80837a;">by <span class="muted" style="color:#5a5d54; font-weight:500;">${escapeHtml(item.author)}</span></span>`);
+  }
+  if (item.page) {
+    footerParts.push(`<span class="faint" style="color:#80837a;">Page ${escapeHtml(item.page)}</span>`);
+  }
+  if (isSafeUrl(item.sourceUrl)) {
+    footerParts.push(`<a href="${escapeHtml(item.sourceUrl)}" class="faint" style="color:#80837a; text-decoration:underline;">Source</a>`);
+  }
+  const hasNote = Boolean(item.note && item.note.getText().trim());
+  const footer = footerParts.length
+    ? `<div class="dots" style="font-size:14px; line-height:1; letter-spacing:4px; color:#c9c4b6; margin:${hasNote ? 10 : 14}px 0 8px;">&middot;&middot;&middot;</div>
+          <div style="font-size:12px; line-height:1.5;">${footerParts.join('<span style="display:inline-block; width:12px;"></span>')}</div>`
     : '';
 
-  const page = item.page
-    ? `<p style="font-size:11.5px; color:#a6a6a4; margin:2px 0 2px 10px;">(Page ${escapeHtml(item.page)})</p>`
+  const note = hasNote
+    ? `<div class="rule" style="width:32px; border-top:1px solid #c9c4b6; margin:16px 0 12px; font-size:0; line-height:0;">&nbsp;</div>
+          <div class="muted" style="font-size:13px; line-height:1.55; color:#5a5d54;">${convertRichTextToHtml(item.note)}</div>`
     : '';
 
-  const source = isSafeUrl(item.sourceUrl)
-    ? `<p style="font-size:11.5px; margin:2px 0 2px 10px;"><a href="${escapeHtml(item.sourceUrl)}" style="color:#a6a6a4;">Source</a></p>`
-    : '';
-
-  const note = item.note && item.note.getText().trim()
-    ? `<div style="background-color:#f9f9f9; padding:2px 15px; border-left:4px solid #ccc;">
-        <p><strong>Note:</strong> ${convertRichTextToHtml(item.note)}</p>
-      </div>`
-    : '';
-
-  return `<div style="border:1px solid #ccc; padding:10px; margin:10px 0; text-align:left;">
-    <p style="color:#1f1e1b; font-size:17px; font-family:Verdana; padding:0 5px;"><strong>${escapeHtml(item.title)}</strong>${author}</p>
-    <hr style="border:none; border-top:1px solid #ccc; margin:5px 0;">
-    <blockquote style="font-size:13px; text-align:left;">${convertRichTextToHtml(item.highlight)}</blockquote>
-    ${page}${source}${note}
-  </div><br>`;
+  return `<tr>
+  <td style="padding:0 0 12px; font-family:${FONT_SANS};">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td width="14" style="font-size:0; line-height:0;">&nbsp;</td>
+        <td class="tab" bgcolor="#e2ddd0" style="background-color:#e2ddd0; color:#3c3f37; font-family:${FONT_SANS}; font-size:12px; line-height:1.4; padding:4px 12px; border-radius:6px 6px 0 0;">${escapeHtml(item.title)}</td>
+      </tr>
+    </table>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td class="card" bgcolor="#ffffff" style="background-color:#ffffff; border:1px solid #e3dfd5; border-radius:8px; padding:16px 18px;">
+          <div class="ink" style="font-size:15px; line-height:1.65; color:#1c1e1a;">${convertRichTextToHtml(item.highlight)}</div>
+          ${note}${footer}
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>`;
 }
 
 function convertRichTextToHtml(richText) {
@@ -148,7 +207,7 @@ function convertRichTextToHtml(richText) {
     const textStyle = run.getTextStyle();
     let style = '';
 
-    if (textStyle.isBold()) style += 'font-weight:bold;';
+    if (textStyle.isBold()) style += 'font-weight:600;';
     if (textStyle.isItalic()) style += 'font-style:italic;';
     if (textStyle.isUnderline()) style += 'text-decoration:underline;';
 
