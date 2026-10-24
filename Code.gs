@@ -3,9 +3,14 @@ const CONFIG = {
   subject: 'Daily Highlights',
   senderName: 'Daily Highlights',
   triggerHour: 8,
-  columnCount: 5,
+  skipHiddenSheets: true,
+  excludedSheets: [],
   columns: { highlight: 0, author: 1, note: 2, page: 3, sourceUrl: 4 },
 };
+
+const COLUMN_COUNT = Math.max(...Object.values(CONFIG.columns)) + 1;
+const EMAIL_PATTERN = /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/;
+const ERROR_VALUE = /^#(N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NUM!|NULL!|ERROR!)$/;
 
 const FONT_SANS = "'Inter', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
 const FONT_SERIF = "Georgia, 'Times New Roman', serif";
@@ -26,113 +31,143 @@ const EMAIL_STYLES = `
 `;
 
 function sendRandomHighlight() {
-  try {
-    const settings = getSettings();
-    const spreadsheet = SpreadsheetApp.openById(settings.spreadsheetId);
-    const highlights = loadHighlights(spreadsheet);
+  const settings = getSettings();
+  const candidates = listCandidates(SpreadsheetApp.openById(settings.spreadsheetId));
+  sendDigest(settings, candidates);
+}
 
-    if (highlights.length === 0) {
-      Logger.log('No valid highlights found. Check that column A is filled and row 1 is a header.');
-      return;
-    }
+function sendDigest(settings, candidates) {
+  validateConfig();
 
-    const selected = selectHighlights(highlights, CONFIG.numHighlights);
-    sendDigest(settings.recipients, renderEmail(selected));
-    Logger.log(`Sent ${selected.length} highlight(s) to ${settings.recipients.length} recipient(s).`);
-  } catch (error) {
-    Logger.log(`Daily Highlights failed: ${error.message}`);
-    throw error;
+  if (candidates.length === 0) {
+    throw new Error('No valid highlights found. Check that column A is filled and row 1 is a header.');
+  }
+
+  const highlights = pickRandom(candidates, CONFIG.numHighlights).map(loadHighlight);
+  deliver(settings.recipients, renderEmail(highlights), renderPlainText(highlights));
+  console.log(`Sent ${highlights.length} highlight(s) to ${settings.recipients.length} recipient(s).`);
+}
+
+function validateConfig() {
+  if (!Number.isInteger(CONFIG.numHighlights) || CONFIG.numHighlights < 1) {
+    throw new Error('CONFIG.numHighlights must be a positive integer.');
+  }
+  if (!Number.isInteger(CONFIG.triggerHour) || CONFIG.triggerHour < 0 || CONFIG.triggerHour > 23) {
+    throw new Error('CONFIG.triggerHour must be an integer from 0 to 23.');
   }
 }
 
 function getSettings() {
   const props = PropertiesService.getScriptProperties();
   const spreadsheetId = props.getProperty('SPREADSHEET_ID');
-  const recipientProperty = props.getProperty('RECIPIENT_EMAIL');
+  const recipients = parseRecipients(props.getProperty('RECIPIENT_EMAIL'));
 
   if (!spreadsheetId) {
     throw new Error('Missing script property SPREADSHEET_ID (Project Settings > Script properties).');
   }
-  if (!recipientProperty) {
+  if (recipients.length === 0) {
     throw new Error('Missing script property RECIPIENT_EMAIL. Use a comma-separated list for several recipients.');
   }
 
-  const recipients = recipientProperty.split(',').map(email => email.trim()).filter(Boolean);
+  const invalid = recipients.filter(email => !EMAIL_PATTERN.test(email));
+  if (invalid.length > 0) {
+    throw new Error(`Invalid address in RECIPIENT_EMAIL: ${invalid.join(', ')}`);
+  }
 
   return { spreadsheetId, recipients };
 }
 
-function loadHighlights(spreadsheet) {
-  return spreadsheet.getSheets().flatMap(readSheet);
+function parseRecipients(raw) {
+  const emails = (raw || '').split(',').map(email => email.trim()).filter(Boolean);
+  return [...new Set(emails)];
 }
 
-function readSheet(sheet) {
+function listCandidates(spreadsheet) {
+  return spreadsheet.getSheets().filter(isIncluded).flatMap(listSheetCandidates);
+}
+
+function isIncluded(sheet) {
+  if (CONFIG.skipHiddenSheets && sheet.isSheetHidden()) return false;
+  return !CONFIG.excludedSheets.includes(sheet.getName());
+}
+
+function listSheetCandidates(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
     return [];
   }
 
-  const columnCount = Math.min(CONFIG.columnCount, sheet.getMaxColumns());
-  const range = sheet.getRange(2, 1, lastRow - 1, columnCount);
-  const values = range.getValues();
-  const richTextValues = range.getRichTextValues();
-  const { highlight, author, note, page, sourceUrl } = CONFIG.columns;
-  const title = sheet.getName();
-  const highlights = [];
+  const column = CONFIG.columns.highlight + 1;
+  const candidates = [];
 
-  values.forEach((row, i) => {
-    const highlightText = richTextValues[i][highlight];
-    if (!highlightText || !highlightText.getText().trim()) {
-      return;
+  sheet.getRange(2, column, lastRow - 1, 1).getValues().forEach(([value], i) => {
+    if (isUsableText(value)) {
+      candidates.push({ sheet, row: i + 2 });
     }
-
-    highlights.push({
-      title,
-      highlight: highlightText,
-      author: cellText(row, author),
-      note: richTextValues[i][note] || null,
-      page: normalizePage(row[page]),
-      sourceUrl: cellText(row, sourceUrl),
-    });
   });
 
-  return highlights;
+  return candidates;
 }
 
-function cellText(row, index) {
-  const value = row[index];
+function isUsableText(value) {
+  const text = String(value).trim();
+  return text !== '' && !ERROR_VALUE.test(text);
+}
+
+function pickRandom(items, count) {
+  const pool = items.slice();
+  const size = Math.min(count, pool.length);
+
+  for (let i = 0; i < size; i++) {
+    const j = i + Math.floor(Math.random() * (pool.length - i));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  return pool.slice(0, size);
+}
+
+function loadHighlight({ sheet, row }) {
+  const columnCount = Math.min(COLUMN_COUNT, sheet.getMaxColumns());
+  const range = sheet.getRange(row, 1, 1, columnCount);
+  const [values] = range.getValues();
+  const [richText] = range.getRichTextValues();
+  const { highlight, author, note, page, sourceUrl } = CONFIG.columns;
+  const sourceCell = richText[sourceUrl];
+
+  return {
+    title: sheet.getName(),
+    highlight: richText[highlight],
+    author: cellText(values[author]),
+    note: hasText(richText[note]) ? richText[note] : null,
+    page: normalizePage(values[page]),
+    sourceUrl: (sourceCell && sourceCell.getLinkUrl()) || cellText(values[sourceUrl]),
+  };
+}
+
+function hasText(richText) {
+  return Boolean(richText && richText.getText().trim());
+}
+
+function cellText(value) {
   return value === undefined || value === null || value instanceof Date ? '' : String(value).trim();
 }
 
 function normalizePage(value) {
-  if (value === undefined || value === null || value === '' || value === 0 || value instanceof Date) {
-    return '';
-  }
-  return String(value).trim();
-}
-
-function selectHighlights(highlights, count) {
-  return shuffleArray(highlights.slice()).slice(0, count);
-}
-
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-  return array;
+  const text = cellText(value);
+  return text === '0' ? '' : text;
 }
 
 function renderEmail(highlights) {
   const date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM d, yyyy');
 
   return `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <meta name="supported-color-schemes" content="light dark">
+  <title>${escapeHtml(CONFIG.subject)}</title>
   <style>${EMAIL_STYLES}</style>
 </head>
 <body style="margin:0; padding:0;">
@@ -160,7 +195,9 @@ function renderEmail(highlights) {
 }
 
 function renderHighlight(item) {
+  const hasNote = Boolean(item.note);
   const footerParts = [];
+
   if (item.author) {
     footerParts.push(`<span class="faint" style="color:#80837a;">by <span class="muted" style="color:#5a5d54; font-weight:500;">${escapeHtml(item.author)}</span></span>`);
   }
@@ -170,7 +207,7 @@ function renderHighlight(item) {
   if (isSafeUrl(item.sourceUrl)) {
     footerParts.push(`<a href="${escapeHtml(item.sourceUrl)}" class="faint" style="color:#80837a; text-decoration:underline;">Source</a>`);
   }
-  const hasNote = Boolean(item.note && item.note.getText().trim());
+
   const footer = footerParts.length
     ? `<div class="dots" style="font-size:14px; line-height:1; letter-spacing:4px; color:#c9c4b6; margin:${hasNote ? 10 : 14}px 0 8px;">&middot;&middot;&middot;</div>
           <div style="font-size:12px; line-height:1.5;">${footerParts.join('<span style="display:inline-block; width:12px;"></span>')}</div>`
@@ -201,6 +238,28 @@ function renderHighlight(item) {
 </tr>`;
 }
 
+function renderPlainText(highlights) {
+  return highlights.map(item => {
+    const lines = [`[${item.title}]`, item.highlight.getText().trim()];
+
+    if (item.note) {
+      lines.push('', `Note: ${item.note.getText().trim()}`);
+    }
+
+    const meta = [
+      item.author && `by ${item.author}`,
+      item.page && `Page ${item.page}`,
+      isSafeUrl(item.sourceUrl) && item.sourceUrl,
+    ].filter(Boolean);
+
+    if (meta.length > 0) {
+      lines.push('', meta.join(' | '));
+    }
+
+    return lines.join('\n');
+  }).join('\n\n---\n\n');
+}
+
 function convertRichTextToHtml(richText) {
   return richText.getRuns().map(run => {
     const text = escapeHtml(run.getText()).replace(/\n/g, '<br>');
@@ -215,11 +274,26 @@ function convertRichTextToHtml(richText) {
 
     const linkUrl = run.getLinkUrl();
     if (isSafeUrl(linkUrl, true)) {
-      html = `<a href="${escapeHtml(linkUrl)}">${html}</a>`;
+      html = `<a href="${escapeHtml(linkUrl)}">${html}</a>${renderLinkTarget(linkUrl, run.getText())}`;
     }
 
     return html;
   }).join('');
+}
+
+function renderLinkTarget(url, visibleText) {
+  const target = linkTarget(url);
+  if (!target || visibleText.toLowerCase().includes(target)) return '';
+  return `<span class="faint" style="color:#80837a; font-size:0.85em;"> (${escapeHtml(target)})</span>`;
+}
+
+function linkTarget(url) {
+  const web = /^https?:\/\/([^\/?#]+)/i.exec(url);
+  if (web) {
+    return web[1].replace(/^.*@/, '').replace(/:\d+$/, '').replace(/^www\./i, '').toLowerCase();
+  }
+  const mail = /^mailto:([^?]+)/i.exec(url);
+  return mail ? mail[1].toLowerCase() : '';
 }
 
 function escapeHtml(value) {
@@ -231,42 +305,49 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function isSafeUrl(url, allowMailto) {
+function isSafeUrl(url, allowMailto = false) {
   if (!url) return false;
   const pattern = allowMailto ? /^(https?:\/\/|mailto:)/i : /^https?:\/\//i;
   return pattern.test(url);
 }
 
-function sendDigest(recipients, htmlBody) {
-  MailApp.sendEmail({
-    to: recipients.join(','),
-    subject: CONFIG.subject,
-    htmlBody,
-    name: CONFIG.senderName,
+function deliver(recipients, htmlBody, body) {
+  if (MailApp.getRemainingDailyQuota() < recipients.length) {
+    throw new Error('Not enough daily email quota left to send to all recipients.');
+  }
+
+  const failures = [];
+
+  recipients.forEach(to => {
+    try {
+      MailApp.sendEmail({ to, subject: CONFIG.subject, body, htmlBody, name: CONFIG.senderName });
+    } catch (error) {
+      failures.push(`${to}: ${error.message}`);
+    }
   });
+
+  if (failures.length > 0) {
+    throw new Error(`Failed to send to ${failures.length} recipient(s): ${failures.join('; ')}`);
+  }
 }
 
 function setup() {
   const settings = getSettings();
-  const spreadsheet = SpreadsheetApp.openById(settings.spreadsheetId);
-  const count = loadHighlights(spreadsheet).length;
+  const candidates = listCandidates(SpreadsheetApp.openById(settings.spreadsheetId));
 
-  if (count === 0) {
-    throw new Error('Spreadsheet opened, but no valid highlights were found.');
-  }
-
-  sendRandomHighlight();
-  Logger.log(`Setup OK: ${count} highlight(s) available. A test email was sent.`);
+  sendDigest(settings, candidates);
+  console.log(`Setup OK: ${candidates.length} highlight(s) available. A test email was sent.`);
 }
 
 function createDailyTrigger() {
+  validateConfig();
   deleteTriggers();
   ScriptApp.newTrigger('sendRandomHighlight')
     .timeBased()
     .everyDays(1)
     .atHour(CONFIG.triggerHour)
     .create();
-  Logger.log(`Daily trigger created for around ${CONFIG.triggerHour}:00.`);
+  console.log(`Daily trigger created for around ${CONFIG.triggerHour}:00.`);
 }
 
 function deleteTriggers() {
@@ -274,5 +355,5 @@ function deleteTriggers() {
     .filter(trigger => trigger.getHandlerFunction() === 'sendRandomHighlight');
 
   triggers.forEach(trigger => ScriptApp.deleteTrigger(trigger));
-  Logger.log(`Deleted ${triggers.length} trigger(s).`);
+  console.log(`Deleted ${triggers.length} trigger(s).`);
 }
