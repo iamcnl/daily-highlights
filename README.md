@@ -14,7 +14,6 @@ No servers, no subscriptions, no third-party access to your notes. It's one Goog
 - Bold, italic, underline and hyperlinks from your sheet are preserved in the email
 - Light and dark mode, plus a plain-text version for clients that don't render HTML
 - Multiple recipients, each receiving their own copy (addresses are never shown to other recipients)
-- Least-privilege access: the script can only read your spreadsheets and send email
 - Two-step setup: one function to test, one to schedule
 
 ## Quick start
